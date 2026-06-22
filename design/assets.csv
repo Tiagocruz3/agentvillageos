@@ -1,0 +1,13 @@
+id,role,type,description,size/ratio,style line ref,source
+grass_tile,ground tiling texture drawn across the iso board,tile,seamless stylized grass with subtle plaza speckle,1:1,STYLE FORMULA,generate
+bld_town_hall,building sprite placed on the central plot (home base),sprite,isometric town hall with clock tower and sky-blue roof,1:1 magenta-key,STYLE FORMULA,generate
+bld_research_lab,building sprite placed on a plot,sprite,isometric research lab with violet roof and holographic screens,1:1 green-key,STYLE FORMULA,generate
+bld_workshop,building sprite placed on a plot,sprite,isometric dev workshop with amber roof and server racks,1:1 magenta-key,STYLE FORMULA,generate
+bld_social_studio,building sprite placed on a plot,sprite,isometric social media studio with coral neon signage,1:1 green-key,STYLE FORMULA,generate
+bld_design_studio,building sprite placed on a plot,sprite,isometric design studio with teal roof and drafting windows,1:1 magenta-key,STYLE FORMULA,generate
+agent_creator,agent avatar option + in-town walker,sprite,young creator in coral hoodie holding a phone,1:1 magenta-key,STYLE FORMULA,generate
+agent_scientist,agent avatar option + in-town walker,sprite,researcher in teal lab coat with glasses and tablet,1:1 magenta-key,STYLE FORMULA,generate
+agent_engineer,agent avatar option + in-town walker,sprite,builder-engineer in amber jacket with wrench and laptop,1:1 magenta-key,STYLE FORMULA,generate
+agent_designer,agent avatar option + in-town walker,sprite,designer in blue outfit with stylus and color palette,1:1 magenta-key,STYLE FORMULA,generate
+card_thumbnail,deploy_game thumbnail + OG image,image,key art of the AgentVerse OS town with title text,16:9,STYLE FORMULA,generate
+card_favicon,deploy_game favicon + catalog icon,image,app icon: single town hall with a gold coin,1:1,STYLE FORMULA,generate
