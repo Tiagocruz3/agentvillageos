@@ -4,7 +4,9 @@
 import { STR } from "./strings.js";
 
 /* ============================== CONFIG ============================== */
-const HW = 64, HH = 32, GRID = 16, STEP = 1000 / 60, MOVE = 120;
+const HW = 64, HH = 32, STEP = 1000 / 60, MOVE = 120;
+let GRID = 22;           // buildable grid; grows with the Expand Land system
+const MARGIN = 3;        // wilderness ring drawn beyond the buildable plots
 const SAVE_KEY = "agentverse_v3";
 const ZMIN = 0.4, ZMAX = 2.3;
 
@@ -85,12 +87,7 @@ const TOOL_EMOJI = { github:"🐙", vercel:"▲", supabase:"⚡", stripe:"💳",
 /* ============================== ASSETS ============================== */
 const CDN = "https://d8j0ntlcm91z4.cloudfront.net/user_3FNORjZACwRQB6VtB4tX0jmJWhf/";
 const ASSET_URL = {
-  grass:            CDN + "hf_20260622_054509_a2f36dd7-7c2b-4eeb-b7db-5712dbe21acc.png",
-  t_grass2:         CDN + "hf_20260622_070953_bc88ccbb-4f4a-4b62-a4c0-2904a3a521d8.png",
-  t_flowers:        CDN + "hf_20260622_070956_abb1f87f-8dc0-4a54-9f2c-e20f63b9079c.png",
-  t_dirt:           CDN + "hf_20260622_070959_3f5054fe-5f6c-457a-93f0-a01338cb63e4.png",
-  t_water:          CDN + "hf_20260622_071002_e19ccc85-79cf-45a8-8c0f-3afa1cdcee4a.png",
-  t_sand:           CDN + "hf_20260622_071004_4fdbff07-3425-4bb4-80d5-788f1fbcdf7a.png",
+  // Terrain is fully procedural now (no tiled textures) — only sprites are fetched.
   bld_openai:       CDN + "hf_20260622_054927_9d92734e-761e-4d92-a162-c20dec3d291d.png",
   bld_anthropic:    CDN + "hf_20260622_054928_14620f0b-cf7c-4df4-93a5-465e30557729.png",
   bld_openrouter:   CDN + "hf_20260622_054929_eb3da634-49a7-4bb1-ae46-dfc0c7b70769.png",
@@ -128,9 +125,11 @@ let S = null, now = 0, place = null, move = null, hoverCell = null;
 const $ = s => document.querySelector(s);
 
 function fresh() {
-  const s = { coins: 3000, buildings: [], agents: [], decos: [], keys: {}, endpoints: {}, integrations: {}, customAgents: [], nextId: 1, seenHelp: false, lastCollect: 0 };
+  const size = 22, ctr = Math.floor(size / 2);
+  const s = { coins: 3000, buildings: [], agents: [], decos: [], keys: {}, endpoints: {}, integrations: {}, customAgents: [], nextId: 1, seenHelp: false, lastCollect: 0,
+    world: { size, seed: (Math.random() * 1e9) | 0, expansions: 0 } };
   // Town Hall auto-placed at center as the OS control center
-  s.buildings.push({ id: s.nextId++, kind: "building", type: "town_hall", gx: 8, gy: 8, level: 1, name: "Town Hall", disabled: false, workers: [] });
+  s.buildings.push({ id: s.nextId++, kind: "building", type: "town_hall", gx: ctr, gy: ctr, level: 1, name: "Town Hall", disabled: false, workers: [] });
   return s;
 }
 function save() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
@@ -138,6 +137,7 @@ function load() {
   try {
     const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (!s || !s.buildings) return null;
     s.decos = s.decos || []; s.customAgents = s.customAgents || []; s.integrations = s.integrations || {}; s.endpoints = s.endpoints || {};
+    s.world = s.world || { size: 22, seed: (Math.random() * 1e9) | 0, expansions: 0 };
     for (const a of s.agents) { a.path = a.path || []; a.status = "idle"; a.wait = 0; a.chatting = false; }
     return s;
   } catch (e) { return null; }
@@ -189,14 +189,15 @@ function doPlaceAt(gx, gy) {
 }
 
 function spawnAgent(role, provider, name) {
-  const c = isoCenter(8 + (Math.random() * 4 - 2), 8 + (Math.random() * 4 - 2));
+  const th = townHall(); const bx = th ? th.gx : Math.floor(GRID / 2), by = th ? th.gy : Math.floor(GRID / 2);
+  const c = isoCenter(bx + (Math.random() * 4 - 2), by + (Math.random() * 4 - 2));
   const a = { id: S.nextId++, role: role || "chat", provider: provider || "openai", name: name || AGENT_NAMES[S.nextId % AGENT_NAMES.length],
     personality: "helpful and friendly", wx: c.x, wy: c.y, path: [], status: "idle", wait: 0, flip: false, bob: Math.random() * 6.28, chatting: false, history: [], buildingId: null };
   S.agents.push(a); toast(`${a.name} joined the city`); save(); return a;
 }
 
 /* ============================== SIM ============================== */
-function rndCell() { for (let i = 0; i < 10; i++) { const g = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)]; if (!occupied(g[0], g[1])) return g; } return [8, 8]; }
+function rndCell() { for (let i = 0; i < 18; i++) { const x = Math.floor(Math.random() * GRID), y = Math.floor(Math.random() * GRID); if (!occupied(x, y) && !isWater(x, y)) return [x, y]; } const m = Math.floor(GRID / 2); return [m, m]; }
 function routeTo(a, cell) { const cur = worldToCell(a.wx, a.wy); let cx = Math.round(cur.gx), cy = Math.round(cur.gy); const p = []; while (cx !== cell[0]) { cx += Math.sign(cell[0] - cx); p.push(isoCenter(cx, cy)); } while (cy !== cell[1]) { cy += Math.sign(cell[1] - cy); p.push(isoCenter(cx, cy)); } a.path = p; }
 function step(dt) {
   now += dt;
@@ -215,47 +216,166 @@ function step(dt) {
 /* ============================== RENDER ============================== */
 let groundCanvas = null, gOrig = { x: 0, y: 0 };
 function diamond(g, px, py, hw, hh, fill, stroke) { g.beginPath(); g.moveTo(px, py - hh); g.lineTo(px + hw, py); g.lineTo(px, py + hh); g.lineTo(px - hw, py); g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.stroke(); } }
-/* ============================== TERRAIN MAP ============================== */
-const TILE_COL = { grass: "#74b257", t_grass2: "#6aa64e", t_flowers: "#7cc05f", t_dirt: "#c8a06a", t_water: "#49c4d6", t_sand: "#e8d59a" };
-let TMAP = null;
+/* ============================== TERRAIN (procedural landscape) ============================== */
+// A continuous, painted low-poly landscape — no repeating tiles or texture chunks.
+// Grass is a soft seeded gradient + colour blobs; water and decor are organic and scattered.
+let WATER = [], ENV = [], FLAT = [], WB = { minx: 0, maxx: 0, miny: 0, maxy: 0 };
 function h2(x, y) { let n = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263); n = Math.imul(n ^ (n >>> 13), 1274126177); n ^= n >>> 16; return (n >>> 0) / 4294967296; }
+function hs(a, b, c) { let n = Math.imul((a | 0) + 0x9e3779b9, 374761393) ^ Math.imul((b | 0) + 0x85ebca6b, 668265263) ^ Math.imul((c | 0) + 0xc2b2ae35, 2246822519); n = Math.imul(n ^ (n >>> 15), 2654435761); n ^= n >>> 13; return (n >>> 0) / 4294967296; }
 function vnoise(x, y, s) { const fx = x / s, fy = y / s, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0; const sm = t => t * t * (3 - 2 * t); const lp = (a, b, t) => a + (b - a) * sm(t); return lp(lp(h2(x0, y0), h2(x0 + 1, y0), tx), lp(h2(x0, y0 + 1), h2(x0 + 1, y0 + 1), tx), ty); }
-function buildTerrain() {
-  TMAP = []; const cx = 8, cy = 8;
-  // a few ponds with organic noisy edges (kept away from the town center)
-  const ponds = [[3, 12, 2.6], [13, 4, 2.3], [12, 13, 1.8]];
-  for (let x = 0; x < GRID; x++) { TMAP[x] = []; for (let y = 0; y < GRID; y++) {
-    let dmin = 99; for (const [px, py, pr] of ponds) { const r = pr + (h2(x, y) - 0.5) * 0.9; dmin = Math.min(dmin, Math.hypot(x - px, y - py) - r); }
-    const nearCenter = Math.max(Math.abs(x - cx), Math.abs(y - cy)) <= 2;
-    const biome = h2(Math.floor(x / 3) + 11, Math.floor(y / 3) + 5); // coarse biome regions
-    const cell = h2(x + 7, y + 3); // per-cell variation
-    let k;
-    if (!nearCenter && dmin < 0) k = "t_water";
-    else if (!nearCenter && dmin < 1.0) k = "t_sand";
-    else if (biome > 0.82) k = cell > 0.32 ? "t_flowers" : "t_grass2";   // flower meadow patch
-    else if (biome < 0.18) k = cell > 0.4 ? "t_dirt" : "t_grass2";       // dirt patch
-    else k = cell > 0.5 ? "grass" : "t_grass2";                          // varied grassland
-    TMAP[x][y] = k;
-  } }
-}
-function tileAt(gx, gy) { return (TMAP && TMAP[gx] && TMAP[gx][gy]) || "grass"; }
-function isWater(gx, gy) { return tileAt(gx, gy) === "t_water"; }
+function fbm(x, y) { return vnoise(x, y, 6) * 0.6 + vnoise(x + 99, y - 37, 2.5) * 0.3 + vnoise(x - 17, y + 51, 1.2) * 0.1; }
+const SEED = () => (S && S.world && S.world.seed) || 1234;
 
-function buildGround() {
-  let mnX = 1e9, mnY = 1e9, mxX = -1e9, mxY = -1e9;
-  for (let x = 0; x < GRID; x++) for (let y = 0; y < GRID; y++) { const c = isoCenter(x, y); mnX = Math.min(mnX, c.x - HW); mxX = Math.max(mxX, c.x + HW); mnY = Math.min(mnY, c.y - HH); mxY = Math.max(mxY, c.y + HH); }
-  const pad = 8; gOrig = { x: -mnX + pad, y: -mnY + pad };
-  const cv = document.createElement("canvas"); cv.width = (mxX - mnX) + pad * 2; cv.height = (mxY - mnY) + pad * 2;
-  const g = cv.getContext("2d"); const grass = IMG.grass;
-  for (let sum = 0; sum <= (GRID - 1) * 2; sum++) for (let x = 0; x < GRID; x++) { const y = sum - x; if (y < 0 || y >= GRID) continue;
-    const c = isoCenter(x, y), px = c.x + gOrig.x, py = c.y + gOrig.y;
-    const key = tileAt(x, y), tImg = IMG[key] || IMG.grass;
-    g.save(); g.beginPath(); g.moveTo(px, py - HH); g.lineTo(px + HW, py); g.lineTo(px, py + HH); g.lineTo(px - HW, py); g.closePath(); g.clip();
-    if (tImg) g.drawImage(tImg, px - HW, py - HH, HW * 2, HH * 2); else { g.fillStyle = TILE_COL[key] || "#79b85c"; g.fill(); }
-    g.fillStyle = (x + y) % 2 ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.04)"; g.fillRect(px - HW, py - HH, HW * 2, HH * 2); g.restore();
-    g.lineWidth = 1.3; diamond(g, px, py, HW, HH, null, "rgba(40,60,35,0.22)");
+// ---- water generation (organic ponds + a meandering stream), seeded & deterministic ----
+function genWater() {
+  WATER = []; const size = GRID, seed = SEED(), cx = size / 2, cy = size / 2;
+  const nP = Math.max(4, Math.round(size / 3.2)); let placed = 0;
+  for (let i = 0; i < nP * 5 && placed < nP; i++) {
+    const x = -MARGIN + hs(i, seed, 1) * (size + 2 * MARGIN), y = -MARGIN + hs(i, seed, 2) * (size + 2 * MARGIN);
+    if (Math.hypot(x - cx, y - cy) < 4.5) continue;                       // keep the town centre clear
+    const t = hs(i, seed, 3), r = t < 0.5 ? 1.0 + t * 1.2 : t < 0.82 ? 1.9 + t : 2.8 + t * 1.3; // small · medium · large
+    if (WATER.some(p => p.type === "pond" && Math.hypot(p.x - x, p.y - y) < (p.r + r) * 0.85)) continue; // no merging
+    WATER.push({ type: "pond", x, y, r, ph: hs(i, seed, 5) * 6.28, ph2: hs(i, seed, 6) * 6.28 });
+    placed++;
   }
+  if (size >= 18) {                                                       // one wandering stream
+    const pts = [], n = 8, sy0 = -MARGIN + hs(0, seed, 7) * (size + 2 * MARGIN);
+    for (let i = 0; i <= n; i++) { const x = -MARGIN + (i / n) * (size + 2 * MARGIN); const y = sy0 + (fbm(x * 1.4 + seed % 50, 3.3) - 0.5) * size * 0.7; if (Math.hypot(x - cx, y - cy) > 5.5) pts.push({ x, y }); }
+    if (pts.length >= 3) WATER.push({ type: "stream", pts, w: 0.55 });
+  }
+}
+function pondR(p, ang) { return p.r * (1 + 0.17 * Math.sin(3 * ang + p.ph) + 0.11 * Math.sin(5 * ang - p.ph2)); }
+function segDist(px, py, a, b) { const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1e-6; let t = ((px - a.x) * dx + (py - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t)); return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy)); }
+function isWater(gx, gy) {
+  for (const p of WATER) {
+    if (p.type === "pond") { const ang = Math.atan2(gy - p.y, gx - p.x); if (Math.hypot(gx - p.x, gy - p.y) < pondR(p, ang) * 0.92) return true; }
+    else { for (let i = 0; i < p.pts.length - 1; i++) if (segDist(gx, gy, p.pts[i], p.pts[i + 1]) < p.w * 1.1) return true; }
+  }
+  return false;
+}
+
+// ---- scattered decor: trees/bushes/rocks are depth-sorted sprites; flowers/grass are baked flat ----
+function genEnv() {
+  ENV = []; FLAT = []; const size = GRID, seed = SEED(), cx = size / 2, cy = size / 2, step = 1.45;
+  for (let gx = -MARGIN; gx <= size + MARGIN; gx += step) for (let gy = -MARGIN; gy <= size + MARGIN; gy += step) {
+    const ix = Math.round(gx * 16), iy = Math.round(gy * 16);
+    const x = gx + (hs(ix, iy, seed + 1) - 0.5) * step * 1.3, y = gy + (hs(ix, iy, seed + 2) - 0.5) * step * 1.3;
+    if (isWater(x, y)) continue;
+    const dens = 0.45 + fbm(x + seed % 30, y - seed % 20) * 0.85;          // groves vs open meadows (weighted)
+    if (hs(ix, iy, seed) > dens) continue;
+    const roll = hs(ix + 3, iy + 7, seed + 9), vv = hs(ix + 5, iy + 2, seed + 4), dC = Math.hypot(x - cx, y - cy);
+    if (dC < 3.4) { FLAT.push({ type: roll < 0.7 ? "grass" : "flower", x, y, v: vv }); continue; } // town core: only low cover
+    if (roll < 0.30) FLAT.push({ type: "grass", x, y, v: vv });
+    else if (roll < 0.52) FLAT.push({ type: "flower", x, y, v: vv });
+    else if (roll < 0.74) ENV.push({ type: "tree", x, y, v: vv });
+    else if (roll < 0.90) ENV.push({ type: "bush", x, y, v: vv });
+    else ENV.push({ type: "rock", x, y, v: vv });
+  }
+}
+
+// ---- ground canvas: continuous painted field clipped to the land's diamond footprint ----
+function groundDiamondPts(lo, hi) {
+  return [
+    { x: isoCenter(lo, lo).x, y: isoCenter(lo, lo).y - HH },               // north
+    { x: isoCenter(hi, lo).x + HW, y: isoCenter(hi, lo).y },               // east
+    { x: isoCenter(hi, hi).x, y: isoCenter(hi, hi).y + HH },               // south
+    { x: isoCenter(lo, hi).x - HW, y: isoCenter(lo, hi).y },               // west
+  ];
+}
+function gpt(cx, cy) { const c = isoCenter(cx, cy); return { x: c.x + gOrig.x, y: c.y + gOrig.y }; }
+function buildGround() {
+  const lo = -MARGIN, hi = GRID - 1 + MARGIN;
+  let mnX = 1e9, mnY = 1e9, mxX = -1e9, mxY = -1e9;
+  for (const p of groundDiamondPts(lo, hi)) { mnX = Math.min(mnX, p.x); mxX = Math.max(mxX, p.x); mnY = Math.min(mnY, p.y); mxY = Math.max(mxY, p.y); }
+  const pad = 40; gOrig = { x: -mnX + pad, y: -mnY + pad }; WB = { minx: mnX, maxx: mxX, miny: mnY, maxy: mxY };
+  const cv = document.createElement("canvas"); cv.width = (mxX - mnX) + pad * 2; cv.height = (mxY - mnY) + pad * 2;
+  const g = cv.getContext("2d");
+  const pts = groundDiamondPts(lo, hi).map(p => ({ x: p.x + gOrig.x, y: p.y + gOrig.y }));
+  const land = () => { g.beginPath(); g.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < 4; i++) g.lineTo(pts[i].x, pts[i].y); g.closePath(); };
+  // soft horizon shadow so the land reads as raised ground, not a hard square
+  g.save(); land(); g.shadowColor = "rgba(35,65,35,0.4)"; g.shadowBlur = 30; g.shadowOffsetY = 10; g.fillStyle = "#6aa84e"; g.fill(); g.restore();
+  g.save(); land(); g.clip();
+  const grad = g.createLinearGradient(0, 0, 0, cv.height); grad.addColorStop(0, "#84c264"); grad.addColorStop(1, "#6da750"); g.fillStyle = grad; g.fillRect(0, 0, cv.width, cv.height);
+  paintGrass(g, cv);
+  for (const p of WATER) p.type === "pond" ? bakePond(g, p) : bakeStream(g, p);
+  for (const f of FLAT) f.type === "flower" ? bakeFlower(g, f) : bakeGrassTuft(g, f);
+  g.restore();
+  g.save(); land(); g.lineWidth = 6; g.strokeStyle = "rgba(60,95,55,0.22)"; g.stroke(); g.restore();
   groundCanvas = cv;
+}
+function paintGrass(g, cv) {
+  const seed = SEED(), n = Math.round(cv.width * cv.height / 9000);
+  const lights = ["#93cf6e", "#8ac766", "#9ad673"], darks = ["#5f9c47", "#69a64f", "#62a049"];
+  for (let i = 0; i < n; i++) {
+    const x = hs(i, seed, 21) * cv.width, y = hs(i, seed, 22) * cv.height, r = 50 + hs(i, seed, 23) * 150;
+    const col = (hs(i, seed, 24) > 0.5 ? lights : darks)[Math.floor(hs(i, seed, 25) * 3)];
+    g.globalAlpha = 0.08 + hs(i, seed, 26) * 0.15; g.fillStyle = col;
+    g.beginPath(); g.ellipse(x, y, r, r * 0.6, 0, 0, 6.28); g.fill();
+  }
+  g.globalAlpha = 1;
+}
+function bakePond(g, p) {
+  const c = gpt(p.x, p.y); const path = rs => { g.beginPath(); for (let a = 0; a <= 6.2832; a += 0.16) { const r = pondR(p, a) * rs, x = c.x + Math.cos(a) * r * HW, y = c.y + Math.sin(a) * r * HH; a === 0 ? g.moveTo(x, y) : g.lineTo(x, y); } g.closePath(); };
+  path(1.18); g.fillStyle = "#cfdca2"; g.fill();                           // sandy shore
+  path(1.0); const wg = g.createRadialGradient(c.x, c.y - 4, 2, c.x, c.y, Math.max(8, p.r * HW)); wg.addColorStop(0, "#7fd6e6"); wg.addColorStop(1, "#3a9fc4"); g.fillStyle = wg; g.fill();
+  g.save(); path(1.0); g.clip(); g.globalAlpha = 0.5; g.strokeStyle = "#bfeef6"; g.lineWidth = 3; g.beginPath(); g.ellipse(c.x, c.y - p.r * HH * 0.25, p.r * HW * 0.55, p.r * HH * 0.4, 0, 0, 6.28); g.stroke(); g.restore();
+}
+function bakeStream(g, p) {
+  const trace = () => { g.beginPath(); p.pts.forEach((q, i) => { const c = gpt(q.x, q.y); i === 0 ? g.moveTo(c.x, c.y) : g.lineTo(c.x, c.y); }); };
+  g.lineCap = "round"; g.lineJoin = "round";
+  trace(); g.strokeStyle = "#cfdca2"; g.lineWidth = p.w * HW * 3; g.stroke();
+  trace(); g.strokeStyle = "#46a6c9"; g.lineWidth = p.w * HW * 2; g.stroke();
+  trace(); g.strokeStyle = "rgba(190,238,246,0.5)"; g.lineWidth = p.w * HW * 0.7; g.stroke();
+}
+function bakeFlower(g, f) {
+  const c = gpt(f.x, f.y), cols = ["#ff7aa8", "#ffd84d", "#ff9d4d", "#c58bff", "#ffffff"], col = cols[Math.floor(f.v * cols.length) % cols.length];
+  g.fillStyle = "#4d8f3e"; g.fillRect(c.x - 0.6, c.y - 1, 1.2, 5);
+  g.fillStyle = col; for (let i = 0; i < 4; i++) { const a = i / 4 * 6.28 + f.v; g.beginPath(); g.arc(c.x + Math.cos(a) * 2.2, c.y - 2 + Math.sin(a) * 2.2, 1.6, 0, 6.28); g.fill(); }
+  g.fillStyle = "#ffe27a"; g.beginPath(); g.arc(c.x, c.y - 2, 1.2, 0, 6.28); g.fill();
+}
+function bakeGrassTuft(g, f) {
+  const c = gpt(f.x, f.y); g.strokeStyle = f.v > 0.5 ? "#5aa843" : "#69b84f"; g.lineWidth = 1.4; g.lineCap = "round";
+  for (let i = -1; i <= 1; i++) { g.beginPath(); g.moveTo(c.x + i * 2.4, c.y + 2); g.lineTo(c.x + i * 2.4 + i * 1.6, c.y - 5 - Math.abs(i)); g.stroke(); }
+}
+function rebuildWorld() { GRID = (S && S.world && S.world.size) || 22; genWater(); genEnv(); buildGround(); }
+
+// ---- decor sprites (depth-sorted, screen-space, zoom-aware) ----
+function drawEnv(ctx, e) {
+  const c = isoCenter(e.x, e.y), s = w2s(c.x, c.y), z = cam.zoom;
+  if (s.x < -90 || s.x > view.w + 90 || s.y < -140 || s.y > view.h + 90) return;  // cull off-screen
+  ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = "#23401f"; ctx.beginPath(); ctx.ellipse(s.x, s.y, (e.type === "tree" ? 15 : 11) * z, (e.type === "tree" ? 6.5 : 5) * z, 0, 0, 6.28); ctx.fill(); ctx.restore();
+  if (e.type === "tree") drawTree(ctx, s, z, e.v); else if (e.type === "bush") drawBush(ctx, s, z, e.v); else drawRock(ctx, s, z, e.v);
+}
+function drawTree(ctx, s, z, v) {
+  const th = (15 + v * 6) * z, tw = 5 * z;
+  roundRect(ctx, s.x - tw / 2, s.y - th, tw, th, 2 * z, "#8a5a32");
+  const greens = [["#57b65f", "#3f9d4f"], ["#6cc36a", "#4aa84e"], ["#4ca85a", "#367f40"]][Math.floor(v * 3) % 3];
+  const cy = s.y - th - 8 * z, R = (15 + v * 5) * z;
+  ctx.fillStyle = greens[1]; ctx.beginPath(); ctx.arc(s.x - 7 * z, cy + 4 * z, R * 0.72, 0, 6.28); ctx.arc(s.x + 7 * z, cy + 4 * z, R * 0.72, 0, 6.28); ctx.fill();
+  ctx.fillStyle = greens[0]; ctx.beginPath(); ctx.arc(s.x, cy - 4 * z, R * 0.92, 0, 6.28); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.beginPath(); ctx.arc(s.x - 5 * z, cy - 9 * z, R * 0.34, 0, 6.28); ctx.fill();
+}
+function drawBush(ctx, s, z, v) {
+  const R = (8 + v * 4) * z, g = ["#5aa84e", "#4f9d46", "#67b85a"][Math.floor(v * 3) % 3];
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(s.x - R * 0.7, s.y - R * 0.5, R * 0.75, 0, 6.28); ctx.arc(s.x + R * 0.7, s.y - R * 0.5, R * 0.75, 0, 6.28); ctx.arc(s.x, s.y - R, R, 0, 6.28); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.16)"; ctx.beginPath(); ctx.arc(s.x - 2 * z, s.y - R * 1.2, R * 0.4, 0, 6.28); ctx.fill();
+}
+function drawRock(ctx, s, z, v) {
+  const R = (7 + v * 5) * z, g = v > 0.5 ? "#9aa3ab" : "#8b939b";
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(s.x - R, s.y); ctx.lineTo(s.x - R * 0.5, s.y - R * 0.9); ctx.lineTo(s.x + R * 0.35, s.y - R); ctx.lineTo(s.x + R, s.y - R * 0.3); ctx.lineTo(s.x + R * 0.6, s.y); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.22)"; ctx.beginPath(); ctx.moveTo(s.x - R * 0.5, s.y - R * 0.9); ctx.lineTo(s.x + R * 0.35, s.y - R); ctx.lineTo(s.x + R * 0.1, s.y - R * 0.5); ctx.closePath(); ctx.fill();
+}
+
+// ---- player roads: auto-connect to neighbouring roads & buildings (corners/intersections emerge) ----
+function roadHere(gx, gy) { return S.decos.some(d => d.type === "road" && d.gx === gx && d.gy === gy) || !!buildingAt(gx, gy); }
+function drawRoad(ctx, d, top) {
+  const c = isoCenter(d.gx, d.gy), s = w2s(c.x, c.y), z = cam.zoom;
+  ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = ctx.fillStyle = top ? "#cdc7b8" : "#9d9480";
+  const lw = (top ? 0.34 : 0.46) * HW * z;
+  ctx.beginPath(); ctx.ellipse(s.x, s.y, lw * 0.55, lw * 0.55 * (HH / HW), 0, 0, 6.28); ctx.fill();
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { if (!roadHere(d.gx + dx, d.gy + dy)) continue; const m = isoCenter(d.gx + dx * 0.5, d.gy + dy * 0.5), ms = w2s(m.x, m.y); ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(ms.x, ms.y); ctx.stroke(); }
+  ctx.restore();
 }
 function roundRect(ctx, x, y, w, h, r, fill) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); }
 
@@ -266,18 +386,22 @@ function render(ctx) {
   // highlight
   const hl = move != null ? hoverCell : (place ? hoverCell : null);
   if (hl && hl[0] >= 0 && hl[1] >= 0 && hl[0] < GRID && hl[1] < GRID) { const c = isoCenter(hl[0], hl[1]), s = w2s(c.x, c.y); const ok = !occupied(hl[0], hl[1]); ctx.save(); ctx.globalAlpha = .5 + .2 * Math.sin(now * 5); ctx.lineWidth = 2.5; diamond(ctx, s.x, s.y, HW * cam.zoom, HH * cam.zoom, ok ? "rgba(127,208,127,.3)" : "rgba(255,99,99,.3)", ok ? "#7fd07f" : "#ff6363"); ctx.restore(); }
-  // decorations (under buildings)
-  for (const d of S.decos) drawDeco(ctx, d);
-  // depth-sorted buildings + agents
+  // roads (auto-connecting) sit on the ground under everything — base then surface for clean joins
+  const roads = S.decos.filter(d => d.type === "road");
+  for (const d of roads) drawRoad(ctx, d, false);
+  for (const d of roads) drawRoad(ctx, d, true);
+  // other player decorations (under buildings)
+  for (const d of S.decos) if (d.type !== "road") drawDeco(ctx, d);
+  // depth-sorted environment decor + buildings + agents
   const draw = [];
+  for (const e of ENV) draw.push({ k: "e", depth: e.x + e.y, wy: isoCenter(e.x, e.y).y, e });
   for (const b of S.buildings) { const c = isoCenter(b.gx, b.gy); draw.push({ k: "b", depth: b.gx + b.gy, wy: c.y, b }); }
   for (const a of S.agents) { const cc = worldToCell(a.wx, a.wy); draw.push({ k: "a", depth: cc.gx + cc.gy + .5, wy: a.wy, a }); }
   draw.sort((p, q) => p.depth - q.depth || p.wy - q.wy);
-  for (const it of draw) it.k === "b" ? drawBuilding(ctx, it.b) : drawAgent(ctx, it.a);
+  for (const it of draw) it.k === "b" ? drawBuilding(ctx, it.b) : it.k === "a" ? drawAgent(ctx, it.a) : drawEnv(ctx, it.e);
 }
 function drawDeco(ctx, d) {
   const cat = CATALOG[d.type], c = isoCenter(d.gx, d.gy), s = w2s(c.x, c.y), z = cam.zoom;
-  if (d.type === "road") { diamond(ctx, s.x, s.y, HW * .9 * z, HH * .9 * z, "#bdb6a8"); diamond(ctx, s.x, s.y, HW * .66 * z, HH * .66 * z, "#cdc7ba"); return; }
   diamond(ctx, s.x, s.y, HW * .5 * z, HH * .5 * z, "rgba(0,0,0,.12)");
   ctx.font = `${Math.round(30 * z)}px serif`; ctx.textAlign = "center"; ctx.fillText(cat.emoji, s.x, s.y + 6 * z);
 }
@@ -493,8 +617,14 @@ function thEconomy() {
     <div class="card"><div class="grow"><b>+${100 + S.buildings.length * 20}/day</b><div class="muted">Estimated income (buildings)</div></div></div>
     <button class="btn primary full" data-act="collect" ${can ? "" : "disabled"}>${STR.collect}${can ? "" : " (wait)"}</button>`;
 }
+function expandCost() { return 400 + ((S.world.expansions || 0) * 300); }
 function thSystem() {
-  return `<div class="card"><div class="grow"><b>${STR.title}</b><div class="muted">v3 · low-poly</div></div></div>
+  const w = S.world, maxed = (w.size || 22) >= 42;
+  return `<div class="card"><div class="grow"><b>${STR.title}</b><div class="muted">v3 · procedural landscape</div></div></div>
+    <div class="sub">${STR.land}</div>
+    <div class="card"><div class="grow"><b>${w.size}×${w.size}</b><div class="muted">${STR.world_size} · ${w.expansions || 0} ${STR.expansions}</div></div>
+    ${maxed ? `<span class="pill muted">${STR.land_max}</span>` : `<button class="btn primary" data-act="expandland">${STR.expand_land(expandCost())}</button>`}</div>
+    <p class="muted">${STR.expand_note}</p>
     <button class="btn danger full" data-act="resettown">${STR.reset_town}</button>`;
 }
 
@@ -594,7 +724,8 @@ function wire() {
     else if (act === "chatfrom") { closeModal(); openChat(+t.dataset.aid); }
     else if (act === "openbld") { openBuilding(id); }
     else if (act === "collect") { S.coins += 100 + S.buildings.length * 20; S.lastCollect = Date.now(); save(); renderTownHall(); toast("Income collected!"); }
-    else if (act === "resettown") { if (confirm(STR.reset_confirm)) { S = fresh(); save(); closeModal(); centerCam(); updateHint(); } }
+    else if (act === "expandland") { if ((S.world.size || 22) >= 42) toast(STR.land_max); else if (spend(expandCost())) { S.world.size = Math.min(42, (S.world.size || 22) + 5); S.world.expansions = (S.world.expansions || 0) + 1; rebuildWorld(); clampCam(); save(); renderTownHall(); toast(STR.land_new); } }
+    else if (act === "resettown") { if (confirm(STR.reset_confirm)) { S = fresh(); rebuildWorld(); save(); closeModal(); centerCam(); updateHint(); } }
     // quick menu
     else if (act === "open") { closeCtx(); openBuilding(id); }
     else if (act === "move") { closeCtx(); startMove(id); }
@@ -628,7 +759,7 @@ function setupInput(canvas) {
 function tdist(e) { const a = e.touches[0], b = e.touches[1]; return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
 function tmid(e) { const a = e.touches[0], b = e.touches[1]; return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 }; }
 function zoomAt(sx, sy, f) { const b = s2w(sx, sy); cam.tzoom = Math.max(ZMIN, Math.min(ZMAX, cam.tzoom * f)); cam.zoom = cam.tzoom; const a = s2w(sx, sy); cam.tx += b.x - a.x; cam.ty += b.y - a.y; clampCam(); }
-function clampCam() { cam.tx = Math.max(-1200, Math.min(1200, cam.tx)); cam.ty = Math.max(-300, Math.min(1300, cam.ty)); }
+function clampCam() { const m = 220; if (WB.maxx === WB.minx) return; cam.tx = Math.max(WB.minx - m, Math.min(WB.maxx + m, cam.tx)); cam.ty = Math.max(WB.miny - m, Math.min(WB.maxy + m, cam.ty)); }
 function centerCam() { const th = townHall(); const c = th ? isoCenter(th.gx, th.gy) : { x: 0, y: (GRID - 1) * HH }; cam.tx = c.x; cam.ty = c.y; cam.tzoom = 0.8; }
 function pollKeys(dt) { const k = setupInput._keys; if (!k) return; const sp = 340 * dt / cam.zoom; if (k.has("KeyW") || k.has("ArrowUp")) cam.ty -= sp; if (k.has("KeyS") || k.has("ArrowDown")) cam.ty += sp; if (k.has("KeyA") || k.has("ArrowLeft")) cam.tx -= sp; if (k.has("KeyD") || k.has("ArrowRight")) cam.tx += sp; for (const gp of navigator.getGamepads?.() || []) if (gp) { if (Math.abs(gp.axes[0]) > .15) cam.tx += gp.axes[0] * sp; if (Math.abs(gp.axes[1]) > .15) cam.ty += gp.axes[1] * sp; } clampCam(); }
 function pick(sx, sy) {
@@ -647,8 +778,8 @@ function setupCanvas(canvas, ctx) { const DPR = 2; function resize() { const d =
 
 async function main() {
   const canvas = $("#c"), ctx = canvas.getContext("2d");
-  setupCanvas(canvas, ctx); await loadAssets(); buildTerrain(); buildGround();
-  S = load() || fresh(); centerCam(); cam.x = cam.tx; cam.y = cam.ty; cam.zoom = cam.tzoom;
+  setupCanvas(canvas, ctx); await loadAssets();
+  S = load() || fresh(); rebuildWorld(); centerCam(); cam.x = cam.tx; cam.y = cam.ty; cam.zoom = cam.tzoom;
   wire(); setupInput(canvas); updateHint();
   if (!S.seenHelp) openHelp();
   setInterval(save, 8000);

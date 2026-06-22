@@ -36,6 +36,10 @@ export const STR = {
   endpoint: "Endpoint", api_key: "API Key", save: "Save",
   key_note: "Stored only in this browser, sent straight to the provider. Use spend-capped keys.",
   collect: "Collect daily income", reset_town: "Reset town", reset_confirm: "Reset the whole town? Deletes everything.",
+  // land / expansion
+  land: "Land", world_size: "World size", expansions: "expansions",
+  expand_land: (c) => `Expand land · ${c} 🪙`, land_max: "Land at maximum", land_new: "New land generated!",
+  expand_note: "Each expansion grows the map and procedurally generates fresh ponds, trees, rocks & decor — every expansion is unique.",
   locate: "Locate", chat: "Chat",
   // chat
   chat_ph: "Message your agent…", send: "Send", typing: "typing…",
